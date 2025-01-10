@@ -1,3 +1,5 @@
+use std::collections::btree_map::Range;
+
 use crate::tensor::Tensor;
 
 // get (row) vectors from a 2D table given a list of indices
@@ -71,7 +73,26 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
 }
 
 pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
-    todo!("实现 rms_norm，计算前做一些必要的检查会帮助你后续调试")
+    let len = x.shape()[1];
+    let shape = y.shape().clone();
+    let mut _y = unsafe{y.data_mut()};
+    for i in 0..shape[1]{
+        let index = i * shape[0];
+        let _bottom:f32 = (x.data().iter().enumerate().map(|x|{
+            if(x.0>=i * shape[0]&&x.0<(i+1) * shape[0]){
+                x.1*x.1
+            }
+            else{
+                0.0
+            }
+        }
+        ).sum());
+        let bottom = (_bottom/(len as f32)+epsilon).sqrt();
+        for j in 0..shape[0]{
+            _y[j+index] = w.data()[j]*x.data()[j+index]/bottom;
+        }
+    }
+    //todo!("实现 rms_norm，计算前做一些必要的检查会帮助你后续调试")
 }
 
 // y = silu(x) * y
