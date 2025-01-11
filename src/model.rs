@@ -208,9 +208,7 @@ pub fn test_mlp() {
         &rms_w,
         eps,
     );
-    // for i in residual.data(){
-    //     println!("{}",i);
-    // }
+
     assert!(residual.close_to(
         &Tensor::<f32>::new(
             vec![
