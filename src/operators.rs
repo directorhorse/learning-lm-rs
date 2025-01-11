@@ -76,10 +76,10 @@ pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: 
     let len = x.shape()[1];
     let shape = y.shape().clone();
     let mut _y = unsafe{y.data_mut()};
-    for i in 0..shape[1]{
-        let index = i * shape[0];
+    for i in 0..shape[0]{
+        let index = i * shape[1];
         let _bottom:f32 = (x.data().iter().enumerate().map(|x|{
-            if(x.0>=i * shape[0]&&x.0<(i+1) * shape[0]){
+            if(x.0>=i * shape[1]&&x.0<(i+1) * shape[1]){
                 x.1*x.1
             }
             else{
@@ -88,7 +88,7 @@ pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: 
         }
         ).sum());
         let bottom = (_bottom/(len as f32)+epsilon).sqrt();
-        for j in 0..shape[0]{
+        for j in 0..shape[1]{
             _y[j+index] = w.data()[j]*x.data()[j+index]/bottom;
         }
     }
@@ -240,10 +240,12 @@ fn test_rms_norm() {
 fn test_matmul_transb() {
     let mut c = Tensor::<f32>::new(vec![1., 2., 3., 4.], &vec![2, 2]);
     let a = Tensor::<f32>::new(vec![1., 2., 3., 4., 5., 6.], &vec![2, 3]);
-    let b = Tensor::<f32>::new(vec![1., 2., 3., 4., 5., 6.], &vec![2, 3]);
+    // let b = Tensor::<f32>::new(vec![1., 2., 3., 4., 5., 6.], &vec![2, 3]);
+    let b = Tensor::<f32>::new(vec![1., 1., 1., 1., 1., 1.], &vec![2, 3]);
     matmul_transb(&mut c, 1., &a, &b, 1.);
     assert!(c.close_to(
-        &Tensor::<f32>::new(vec![15., 34., 35., 81.], &vec![2, 2]),
+        // &Tensor::<f32>::new(vec![15., 34., 35., 81.], &vec![2, 2]),
+        &Tensor::<f32>::new(vec![7., 8., 18., 19.], &vec![2, 2]),
         1e-3
     ));
 }
