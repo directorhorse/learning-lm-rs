@@ -3,7 +3,7 @@ use std::vec;
 
 use crate::config::LlamaConfigJson;
 use crate::kvcache::KVCache;
-use crate::operators::{self as OP, matmul_transb, rms_norm, swiglu};
+use crate::operators::{self as OP, masked_softmax, matmul_transb, rms_norm, swiglu, transb};
 use crate::params::LLamaParams;
 use crate::tensor::Tensor;
 use safetensors::SafeTensors;
@@ -101,10 +101,37 @@ impl Llama<f32> {
             let full_k = &mut cache.k_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
             let full_v = &mut cache.v_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
 
-            todo!("self_attention(...)");
-            todo!("down_proj matmul and add residual");
-
-            todo!("mlp(...)");
+            // todo!("self_attention(...)");
+            self_attention(
+                &mut hidden_states, 
+                &mut att_scores, 
+                q, 
+                &full_k, 
+                &full_v, 
+                self.n_kv_h, 
+                n_groups, 
+                seq_len, 
+                total_seq_len, 
+                self.dqkv
+            );
+            matmul_transb(
+                &mut residual, 
+                1.0, 
+                &hidden_states, 
+                &self.params.wo[layer], 
+                1.0
+            );
+            mlp(
+                &mut residual, 
+                &mut hidden_states, 
+                &mut gate_buf, 
+                &mut up_buf, 
+                &self.params.w_up[layer], 
+                &self.params.w_down[layer], 
+                &self.params.w_gate[layer], 
+                &self.params.rms_ffn_w[layer], 
+                self.eps
+            );
         }
 
         // No matter what seq_len, the output is always a 1D vector of length vocab,
@@ -133,11 +160,36 @@ impl Llama<f32> {
         top_k: u32,
         temperature: f32,
     ) -> Vec<u32>{
-        let mut result = Vec::<u32>::new();
-        
-        todo!("实现文本生成");
-        
-        result
+        // 用于存储最终生成的 token 序列
+        let mut generated_tokens = Vec::<u32>::new();
+        // 初始化 key - value 缓存，缓存可在每一层计算中复用
+        let mut kv_cache = self.new_cache();
+        // 把输入的 token 序列复制到一个新的 Vec 中
+        let input_tokens: Vec<u32> = token_ids.to_vec();
+        // 将 token 序列转换为张量，输入张量是二维的，形状为 (1, token_ids 的长度)
+        let mut input_tensor = Tensor::<u32>::new(input_tokens, &vec![1, token_ids.len()]);
+        // 开始生成循环，持续生成直到达到最大长度限制
+        while generated_tokens.len() < max_len {
+            // 执行前向传播操作，得到每个词的未归一化概率分布（logits）
+            let raw_prob_distribution = self.forward(&input_tensor, &mut kv_cache);
+            // 根据 top_p、top_k 和 temperature 策略，从 logits 中采样得到下一个 token
+            let next_generated_token = OP::random_sample(
+                &raw_prob_distribution,
+                top_p,
+                top_k,
+                temperature,
+            );
+            // 将新生成的 token 添加到最终结果列表中
+            generated_tokens.push(next_generated_token);
+            // 检查是否生成了结束标记（EOS），如果是则停止生成过程
+            if next_generated_token == self.eos_token_id {
+                break;
+            }
+            // 更新输入张量，将新生成的 token 作为下一次生成的输入
+            input_tensor = Tensor::<u32>::new(vec![next_generated_token], &vec![1]);
+        }
+        // 返回最终生成的 token 序列
+        generated_tokens
     }
 }
 
@@ -153,7 +205,58 @@ fn self_attention(
     total_seq_len: usize,
     dqkv: usize,
 ) {
-    todo!("Implement self_attention");
+    let att_scores_data = unsafe { att_scores.data_mut() };
+    let q_data = q.data();
+    let k_data = k.data();
+    let v_data = v.data();
+    let norm_factor = (dqkv as f32).sqrt();
+    for head_index in 0..n_kv_h{//按照n_kv_h和n_groups来划分
+        for group_index in 0..n_groups{//(seq,dqkv)x(total_seq,dqkv).T,得到score的坐标(i,j,...,...)
+            for i in 0..seq_len{
+                for j in 0..total_seq_len{
+                    let mut temp = 0.0;
+                    //此时q对应的索引是i*n_kv_h * n_groups * dqkv + head_index * n_groups * dqkv + group_index *dqkv + z
+                    //k对应的索引是j*n_kv_h * dqkv + head_index * dqkv + z
+                    //在score里的坐标是(head_index,group_index,i,j)，即head_index*n_groups*seq*total_seq + group_index*seq*total_seq+i*total_seq+j
+                    for z in 0..dqkv{
+                        let q_index = i*n_kv_h * n_groups * dqkv + head_index * n_groups * dqkv + group_index *dqkv + z;
+                        let k_index = j*n_kv_h * dqkv + head_index * dqkv + z;
+                        temp += q_data[q_index] * k_data[k_index]/norm_factor;
+                    }
+                    let score_index = head_index*n_groups*seq_len*total_seq_len + group_index*seq_len*total_seq_len+i*total_seq_len+j;
+                    att_scores_data[score_index] = temp;
+                }
+            }
+        }
+    }
+    OP::masked_softmax(att_scores);
+    let att_scores_data = unsafe {
+        att_scores.data_mut()
+    };
+    let hidden_state_mut = unsafe {
+        hidden_states.data_mut()
+    };
+    for head_index in 0..n_kv_h{
+        for group_index in 0..n_groups{
+            for i in 0..seq_len{
+                for j in 0..dqkv{
+                    let mut temp = 0.0;
+                    for z in 0..total_seq_len{
+                        //(n_kv_h, n_groups, seq, total_seq)
+                        //在attn_scores里的坐标为(head_index,group_index,i,z)，即head_index*n_groups*seq_len*total_seq_len+group_index*seq_len*total_seq_len+i*total_seq_len+z
+                        //在v里的坐标为z*n_kv_h * dqkv + head_index*dqkv + j
+                        let attn_index = head_index*n_groups*seq_len*total_seq_len+group_index*seq_len*total_seq_len+i*total_seq_len+z;
+                        let v_index = z*n_kv_h * dqkv + head_index*dqkv + j;
+                        temp = att_scores_data[attn_index]*v_data[v_index];
+                    }
+                    //在hidden_states里的位置为i*n_kv_h * n_groups * dqkv + head_index * n_groups * dqkv + group_index * dqkv +j
+                    let hidden_states_index = i*n_kv_h * n_groups * dqkv + head_index * n_groups * dqkv + group_index * dqkv +j;
+                    hidden_state_mut[hidden_states_index] = temp;
+                } 
+            }
+        }
+    }
+
 }
 
 fn mlp(
@@ -167,18 +270,17 @@ fn mlp(
     rms_w: &Tensor<f32>,
     eps: f32,
 ) {
-    println!("hidden is");
-    for i in hidden_states.data(){
-        println!("{}",i);
-    }
+
     rms_norm(hidden_states, residual, rms_w, eps);
-    println!("hidden is");
-    for i in hidden_states.data(){
-        println!("{}",i);
-    }
     matmul_transb(gate, 0.0, hidden_states, w_gate, 1.0);
     matmul_transb(up, 0.0, hidden_states, w_up, 1.0);
     swiglu(up, gate);
+    matmul_transb(hidden_states, 0.0, up, w_down, 1.0);
+    // unsafe {
+    //     residual.data_mut().iter_mut()
+    //     .zip(hidden_states.data().iter())
+    //     .for_each(|(r, h)| *r += *h);
+    // }
     matmul_transb(residual, 1.0, up, w_down, 1.0);
     // todo!("Implement mlp");
 }
@@ -208,7 +310,9 @@ pub fn test_mlp() {
         &rms_w,
         eps,
     );
-
+    for data in hidden_states.data(){
+        print!("{}",data)
+    }
     assert!(residual.close_to(
         &Tensor::<f32>::new(
             vec![
