@@ -73,24 +73,23 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
 }
 
 pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
-    let dims = x.shape().len();
-    let len = if(dims>1){x.shape()[1]}else{1};
-    let shape = y.shape().clone();
-    let mut _y = unsafe{y.data_mut()};
-    for i in 0..shape[0]{
-        let index = i * shape[1];
-        let _bottom:f32 = (x.data().iter().enumerate().map(|x|{
-            if(x.0>=i * shape[1]&&x.0<(i+1) * shape[1]){
-                x.1*x.1
-            }
-            else{
-                0.0
-            }
-        }
-        ).sum());
-        let bottom = (_bottom/(len as f32)+epsilon).sqrt();
-        for j in 0..shape[1]{
-            _y[j+index] = w.data()[j]*x.data()[j+index]/bottom;
+    let dims = x.shape();
+    let dims_len = dims.len();
+    let vec_len = dims[dims_len-1];
+    let vec_num = dims.iter().fold(1, |acc,x| acc*x)/vec_len;
+    let y_mut = unsafe {
+        y.data_mut()
+    };
+    let x_data = x.data();
+    for i in 0..vec_num{
+        // let mut temp = 0.0;
+        // for j in 0..vec_len{
+        //     temp += x_data[i*vec_len+j]*x_data[i*vec_len+j];
+        // }
+        let temp = &x_data[i*vec_len..(i*vec_len+vec_len)].iter().fold(0.0, |acc, xij| acc + xij.powf(2.0));
+        let sqrt_data = (temp/(vec_len as f32) + epsilon).sqrt();
+        for j in 0..vec_len{
+            y_mut[i*vec_len+j] = x_data[i*vec_len+j]*w.data()[j]/sqrt_data;
         }
     }
     //todo!("实现 rms_norm，计算前做一些必要的检查会帮助你后续调试")
@@ -99,16 +98,17 @@ pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: 
 // y = silu(x) * y
 // hint: this is an element-wise operation
 pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
+
     let len = y.size();
     assert!(len == x.size());
 
     let _y = unsafe { y.data_mut() };
     let _x = x.data();
-    for (id,_data) in _x.iter().enumerate(){
-        _y[id] = 1.0*_data*_y[id]/(1.0+(-_data).exp())
+
+    let sigmoid_x = _x.iter().map(|x| 1.0 / (1.0 + (-x).exp())).collect::<Vec<_>>();
+    for i in 0..len {
+        _y[i] = sigmoid_x[i] * _x[i] * _y[i];
     }
-
-
     // todo!("实现 silu，这里给了一些前期准备工作的提示，你可以参考")
 }
 
@@ -116,16 +116,35 @@ pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
 // hint: You don't need to do an explicit transpose of B
 pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
     // todo!("实现 matmul_transb，计算前做一些必要的检查会帮助你后续调试");
+    let a_shape = a.shape(); // (..., m, k)
+    let b_shape = b.shape(); // (..., n, k)
+    let c_shape = c.shape(); // (..., m, n)
+    let m = c_shape[c_shape.len() - 2];
+    let n = c_shape[c_shape.len() - 1];
+    let k = a_shape[a_shape.len() - 1];
+    assert!(a_shape[a_shape.len() - 2] == m);
+    assert!(b_shape[b_shape.len() - 2] == n);
+    assert!(b_shape[b_shape.len() - 1] == k);
+
+    // no broadcast now
+    let batch = c.size() / m / n;
+    let _c = unsafe { c.data_mut() };
     let _a = a.data();
     let _b = b.data();
-    let _c = unsafe {
-        c.data_mut()
-    };
-    for i in 0..a.shape()[0]{
-        for j in 0..b.shape()[0]{
-            _c[i*b.shape()[0]+j] = beta*_c[i*b.shape()[0]+j];
-            for k in 0..a.shape()[1]{
-                _c[i*b.shape()[0]+j] += alpha*_a[i*a.shape()[1]+k]*_b[j*b.shape()[1]+k];
+
+    for b in 0..batch {
+        let offset_c = b * m * n;
+        let offset_a = b * m * k;
+        let offset_b = b * n * k;
+        for i in 0..m {
+            for j in 0..n {
+                let idx_c = offset_c + i * n + j;
+                _c[idx_c] = beta * _c[idx_c];
+                let mut tmp: f32 = 0.0;
+                for e in 0..k {
+                    tmp += _a[offset_a + i * k + e] * _b[offset_b + j * k + e];
+                }
+                _c[idx_c] = _c[idx_c] + alpha * tmp;
             }
         }
     }
@@ -236,24 +255,27 @@ fn test_silu() {
 
 #[test]
 fn test_rms_norm() {
-    // let mut y = Tensor::<f32>::new(vec![1., 2., 3., 4.], &vec![2, 2]);
-    // let x = Tensor::<f32>::new(vec![1., 2., 3., 4.], &vec![2, 2]);
-    // let w = Tensor::<f32>::new(vec![1., 2.], &vec![2]);
-    // rms_norm(&mut y, &x, &w, 1e-6);
-    // assert!(y.close_to(
-    //     &Tensor::<f32>::new(
-    //         vec![0.6324554, 2.5298216, 0.8485281, 2.2627416],
-    //         &vec![2, 2]
-    //     ),
-    //     1e-3
-    // ));
-    let mut y = Tensor::<f32>::new(vec![1., 2., 3., 4.,5.,6.], &vec![2, 3]);
-    let x = Tensor::<f32>::new(vec![1., 2., 3., 4.,5.,6.], &vec![2, 3]);
-    let w = Tensor::<f32>::new(vec![1., 2.,3.], &vec![3]);
+    let mut y = Tensor::<f32>::new(vec![1., 2., 3., 4.], &vec![2, 2]);
+    let x = Tensor::<f32>::new(vec![1., 2., 3., 4.], &vec![2, 2]);
+    let w = Tensor::<f32>::new(vec![1., 2.], &vec![2]);
     rms_norm(&mut y, &x, &w, 1e-6);
     for data in y.data(){
         println!("{}",data)
     }
+    assert!(y.close_to(
+        &Tensor::<f32>::new(
+            vec![0.6324554, 2.5298216, 0.8485281, 2.2627416],
+            &vec![2, 2]
+        ),
+        1e-3
+    ));
+    // let mut y = Tensor::<f32>::new(vec![1., 2., 3., 4.,5.,6.], &vec![2, 3]);
+    // let x = Tensor::<f32>::new(vec![1., 2., 3., 4.,5.,6.], &vec![2, 3]);
+    // let w = Tensor::<f32>::new(vec![1., 2.,3.], &vec![3]);
+    // rms_norm(&mut y, &x, &w, 1e-6);
+    // for data in y.data(){
+    //     println!("{}",data)
+    // }
 }
 
 #[test]
