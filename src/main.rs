@@ -4,9 +4,11 @@ mod model;
 mod operators;
 mod params;
 mod tensor;
+mod rvv_operators;
 
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
+use std::time::{Duration,Instant};
 
 fn main() {
     let project_dir = env!("CARGO_MANIFEST_DIR");
@@ -16,13 +18,18 @@ fn main() {
     let input = "Once upon a time";
     let binding = tokenizer.encode(input, true).unwrap();
     let input_ids = binding.get_ids();
-    print!("\n{}", input);
-    let output_ids = llama.generate(
-        input_ids,
-        500,
-        0.8,
-        30,
-        1.,
-    );
-    println!("{}", tokenizer.decode(&output_ids, true).unwrap());
+    let now = Instant::now();
+    for i in 0..10{
+        let output_ids = llama.generate(
+            input_ids,
+            500,
+            0.8,
+            30,
+            1.,
+        );
+    }
+    
+    let end = now.elapsed().as_secs_f32();
+    // println!("{}", tokenizer.decode(&output_ids, true).unwrap());
+    println!("程序运行了 {:?} 秒",end);
 }

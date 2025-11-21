@@ -1,7 +1,6 @@
 use std::collections::btree_map::Range;
-
 use crate::tensor::Tensor;
-
+use crate::rvv_operators::RvvMath;
 // get (row) vectors from a 2D table given a list of indices
 pub fn gather(y: &mut Tensor<f32>, indices: &Tensor<u32>, table: &Tensor<f32>) {
     let length = indices.size();
@@ -136,6 +135,7 @@ pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor
         let offset_c = b * m * n;
         let offset_a = b * m * k;
         let offset_b = b * n * k;
+        //RvvMath::matrix_transpose_multiply_basic(_a,_b,_c,beta,alpha,m as i32,n as i32,k as i32, offset_a, offset_b, offset_c);
         for i in 0..m {
             for j in 0..n {
                 let idx_c = offset_c + i * n + j;
@@ -280,21 +280,24 @@ fn test_rms_norm() {
 
 #[test]
 fn test_matmul_transb() {
-    // let mut c = Tensor::<f32>::new(vec![1., 2., 3., 4.], &vec![2, 2]);
-    // let a = Tensor::<f32>::new(vec![1., 2., 3., 4., 5., 6.], &vec![2, 3]);
-    // // let b = Tensor::<f32>::new(vec![1., 2., 3., 4., 5., 6.], &vec![2, 3]);
-    // let b = Tensor::<f32>::new(vec![1., 1., 1., 1., 1., 1.], &vec![2, 3]);
-    // matmul_transb(&mut c, 1., &a, &b, 1.);
-    // assert!(c.close_to(
-    //     // &Tensor::<f32>::new(vec![15., 34., 35., 81.], &vec![2, 2]),
-    //     &Tensor::<f32>::new(vec![7., 8., 18., 19.], &vec![2, 2]),
-    //     1e-3
-    // ));
-    let mut c = Tensor::<f32>::new(vec![1., 2., 3., 4.,5.,6.,7.,8.], &vec![2, 4]);
+    let mut c = Tensor::<f32>::new(vec![1., 2., 3., 4.], &vec![2, 2]);
     let a = Tensor::<f32>::new(vec![1., 2., 3., 4., 5., 6.], &vec![2, 3]);
-    let b = Tensor::<f32>::new(vec![1., 2., 3., 4., 5., 6.,7.,8.,9.,10.,11.,12.], &vec![4,3]);
+    // let b = Tensor::<f32>::new(vec![1., 2., 3., 4., 5., 6.], &vec![2, 3]);
+    let b = Tensor::<f32>::new(vec![1., 1., 1., 1., 1., 1.], &vec![2, 3]);
     matmul_transb(&mut c, 1., &a, &b, 1.);
     for data in c.data(){
         println!("{}",data)
     }
+    assert!(c.close_to(
+        // &Tensor::<f32>::new(vec![15., 34., 35., 81.], &vec![2, 2]),
+        &Tensor::<f32>::new(vec![7., 8., 18., 19.], &vec![2, 2]),
+        1e-3
+    ));
+    // let mut c = Tensor::<f32>::new(vec![1., 2., 3., 4.,5.,6.,7.,8.], &vec![2, 4]);
+    // let a = Tensor::<f32>::new(vec![1., 2., 3., 4., 5., 6.], &vec![2, 3]);
+    // let b = Tensor::<f32>::new(vec![1., 2., 3., 4., 5., 6.,7.,8.,9.,10.,11.,12.], &vec![4,3]);
+    // matmul_transb(&mut c, 1., &a, &b, 1.);
+    // for data in c.data(){
+    //     println!("{}",data)
+    // }
 }
